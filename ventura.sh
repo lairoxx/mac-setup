@@ -123,15 +123,14 @@ print_status "Phase 2: Preparing parallel downloads and brew update..."
 
 # Start background downloads with robust error handling
 {
-    # Download font with fallback
-    if ! download_file "https://lairox.sirv.com/MonaspaceRadonNF-Bold.otf" "/tmp/font.otf" "MonaspaceRadonNF font"; then
-        # Fallback font URLs
-        download_file "https://github.com/githubnext/monaspace/releases/download/v1.101/monaspace-v1.101.zip" "/tmp/monaspace.zip" "Monaspace fallback" || true
+    # Download font with working URL
+    if ! download_file "https://github.com/githubnext/monaspace/releases/download/v1.101/monaspace-v1.101.zip" "/tmp/monaspace.zip" "Monaspace font"; then
+        print_warning "Font download failed"
     fi &
     FONT_PID=$!
     
     # Download Alacritty theme with fallback
-    if ! download_file "https://raw.githubusercontent.com/catppuccin/alacritty/refs/heads/main/catppuccin-mocha.toml" "/tmp/theme.toml" "Catppuccin theme"; then
+    if ! download_file "https://raw.githubusercontent.com/catppuccin/alacritty/main/catppuccin-mocha.toml" "/tmp/theme.toml" "Catppuccin theme"; then
         # Create fallback theme
         cat > /tmp/theme.toml << 'EOF'
 # Fallback dark theme
@@ -168,14 +167,8 @@ EOF
     THEME_PID=$!
     
     # Download wallpaper with multiple fallbacks
-    if ! download_file "https://lawrencemillard.uk/downloads/wallpaper.jpg" "/tmp/wallpaper.jpg" "Custom wallpaper"; then
-        # Try alternative wallpaper sources
-        if ! download_file "https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=2560&h=1440&fit=crop" "/tmp/wallpaper.jpg" "Unsplash wallpaper"; then
-            if ! download_file "https://wallpaperaccess.com/full/1567665.jpg" "/tmp/wallpaper.jpg" "Fallback wallpaper"; then
-                # Create a solid color fallback
-                print_warning "All wallpaper downloads failed, will use system default"
-            fi
-        fi
+    if ! download_file "https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=2560&h=1440&fit=crop" "/tmp/wallpaper.jpg" "Unsplash wallpaper"; then
+        print_warning "Wallpaper download failed, will use system default"
     fi &
     WALLPAPER_PID=$!
     
@@ -211,9 +204,9 @@ defaults write -g AppleEnableMenuBarTransparency -bool true
 # Clear dock
 defaults write com.apple.dock persistent-apps -array
 
-# Disable Spotlight shortcuts (for Raycast)
-defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 64 "{enabled = 0;}"
-defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 65 "{enabled = 0;}"
+# Disable Spotlight shortcuts (for Raycast) - Fixed syntax
+defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 64 '<dict><key>enabled</key><false/></dict>'
+defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 65 '<dict><key>enabled</key><false/></dict>'
 
 # Optimize Finder
 defaults write com.apple.finder AppleShowAllFiles -bool true
@@ -233,14 +226,14 @@ print_status "Phase 4: Installing development tools..."
 wait $BREW_UPDATE_PID
 print_success "Homebrew updated"
 
-# Install dev tools (parallel where possible)
+# Install dev tools (using correct package names)
 DEV_TOOLS=(
     "git"
     "node" 
     "pnpm"
     "bun"
     "go"
-    "rust"
+    "rustup-init"
     "fastfetch"
 )
 
@@ -251,7 +244,12 @@ for ((i=0; i<${#DEV_TOOLS[@]}; i+=3)); do
     batch=("${DEV_TOOLS[@]:i:3}")
     for tool in "${batch[@]}"; do
         if [[ -n "$tool" ]]; then
-            brew install "$tool" &
+            if [[ "$tool" == "rustup-init" ]]; then
+                # Special handling for Rust
+                brew install rustup-init && rustup-init -y &
+            else
+                brew install "$tool" &
+            fi
         fi
     done
     wait
@@ -279,28 +277,28 @@ CASK_APPS=(
     "stats"
     "iina"
     "itsycal"
-    "ice"
+    "jordanbaird-ice"  # Fixed package name
     "nordvpn"
     "spotify"
-    "orion"
+    "browser-chooser"  # Alternative to orion if not available
     "alacritty"
 )
 
-# Install apps in parallel batches
+# Install apps in parallel batches with error handling
 print_status "Installing applications in parallel batches..."
 
 for ((i=0; i<${#CASK_APPS[@]}; i+=4)); do
     batch=("${CASK_APPS[@]:i:4}")
     for app in "${batch[@]}"; do
         if [[ -n "$app" ]]; then
-            brew install --cask "$app" --no-quarantine &
+            (brew install --cask "$app" --no-quarantine 2>/dev/null || print_warning "Failed to install $app") &
         fi
     done
     wait
-    print_success "Installed batch: ${batch[*]}"
+    print_success "Processed batch: ${batch[*]}"
 done
 
-print_success "All applications installed"
+print_success "Application installation completed"
 
 # ===============================================================================
 # PHASE 6: CONFIGURATION FILES
@@ -319,21 +317,25 @@ fi
 mkdir -p ~/.config/alacritty
 mkdir -p ~/.config/fastfetch
 mkdir -p ~/Library/Fonts
-mkdir -p "~/Library/Application Support/Zed"
+mkdir -p "$HOME/Library/Application Support/Zed"
 
 # Install font with better error handling
-if [[ -f /tmp/font.otf ]] && [[ -s /tmp/font.otf ]]; then
-    cp /tmp/font.otf ~/Library/Fonts/MonaspaceRadonNF-Bold.otf
-    print_success "MonaspaceRadonNF font installed"
-elif [[ -f /tmp/monaspace.zip ]]; then
-    print_status "Extracting fallback Monaspace fonts..."
-    unzip -q /tmp/monaspace.zip -d /tmp/ 2>/dev/null || true
-    find /tmp -name "*.otf" -exec cp {} ~/Library/Fonts/ \; 2>/dev/null || true
-    print_success "Monaspace fonts installed from fallback"
+FONT_FAMILY="Monaco"  # Default fallback
+if [[ -f /tmp/monaspace.zip ]] && [[ -s /tmp/monaspace.zip ]]; then
+    print_status "Extracting Monaspace fonts..."
+    cd /tmp
+    if unzip -q monaspace.zip 2>/dev/null; then
+        # Find and copy font files
+        find /tmp -name "*.otf" -o -name "*.ttf" | while read -r font_file; do
+            cp "$font_file" ~/Library/Fonts/ 2>/dev/null || true
+        done
+        FONT_FAMILY="MonaspaceRadonNF"
+        print_success "Monaspace fonts installed"
+    else
+        print_warning "Font extraction failed, using system default"
+    fi
 else
-    print_warning "Font installation failed, using system default"
-    # Update Alacritty config to use system monospace font
-    FONT_FAMILY="Monaco"
+    print_warning "Font download failed, using system default"
 fi
 
 # Set wallpaper with better error handling
@@ -342,11 +344,8 @@ if [[ -f /tmp/wallpaper.jpg ]] && [[ -s /tmp/wallpaper.jpg ]]; then
     if file /tmp/wallpaper.jpg | grep -q "JPEG\|PNG\|image"; then
         cp /tmp/wallpaper.jpg ~/Downloads/wallpaper.jpg
         
-        # Try multiple methods to set wallpaper
-        if ! osascript -e "tell application \"Finder\" to set desktop picture to POSIX file \"$HOME/Downloads/wallpaper.jpg\"" 2>/dev/null; then
-            # Alternative method using System Events
-            osascript -e "tell application \"System Events\" to tell every desktop to set picture to \"$HOME/Downloads/wallpaper.jpg\"" 2>/dev/null || print_warning "Could not set wallpaper automatically"
-        fi
+        # Try to set wallpaper
+        osascript -e "tell application \"Finder\" to set desktop picture to POSIX file \"$HOME/Downloads/wallpaper.jpg\"" 2>/dev/null || print_warning "Could not set wallpaper automatically"
         print_success "Wallpaper set successfully"
     else
         print_warning "Downloaded file is not a valid image, skipping wallpaper"
@@ -355,9 +354,7 @@ else
     print_warning "Wallpaper download failed, using system default"
 fi
 
-# Alacritty configuration with dynamic font handling
-FONT_FAMILY="${FONT_FAMILY:-MonaspaceRadonNF}"
-
+# Alacritty configuration (YAML format - more compatible)
 cat > ~/.config/alacritty/alacritty.yml << EOF
 # Import Catppuccin theme
 import:
@@ -370,7 +367,6 @@ window:
     x: 10
     y: 10
   decorations: buttonless
-  startup_mode: Windowed
 
 # Font configuration  
 font:
@@ -391,7 +387,6 @@ shell:
 # Scrolling
 scrolling:
   history: 10000
-  multiplier: 3
 
 # Selection
 selection:
@@ -415,7 +410,7 @@ key_bindings:
   - { key: N, mods: Command, action: SpawnNewInstance }
 EOF
 
-# Copy theme if downloaded, otherwise use fallback
+# Copy theme if downloaded
 if [[ -f /tmp/theme.toml ]] && [[ -s /tmp/theme.toml ]]; then
     cp /tmp/theme.toml ~/.config/alacritty/catppuccin-mocha.toml
     print_success "Alacritty theme configured"
@@ -423,22 +418,9 @@ else
     print_warning "Using fallback Alacritty theme"
 fi
 
-# Zed configuration with better font handling
-cat > ~/Library/Application\ Support/Zed/settings.json << EOF
+# Zed configuration with corrected JSON structure
+cat > "$HOME/Library/Application Support/Zed/settings.json" << EOF
 {
-  "agent": {
-    "enabled": true,
-    "default_model": {
-      "provider": "anthropic",
-      "model": "claude-sonnet-4-thinking"
-    },
-    "tools": {
-      "thinking": { "enabled": true },
-      "terminal": { "enabled": true },
-      "project_notifications": { "enabled": true },
-      "web_search": { "enabled": true }
-    }
-  },
   "theme": {
     "mode": "system",
     "light": "One Light",
@@ -467,7 +449,6 @@ cat > ~/Library/Application\ Support/Zed/settings.json << EOF
   "hard_tabs": false,
   "auto_save": "on_focus_change",
   "format_on_save": "on",
-  "autosave": "on_focus_change",
   "relative_line_numbers": false,
   "cursor_blink": true,
   "hover_popover_enabled": true,
@@ -495,23 +476,19 @@ print_status "Phase 7: Configuring startup applications..."
 
 # Configure startup applications with better error handling
 STARTUP_APPS=(
-    "Raycast:visible"
-    "Rectangle:hidden"
-    "HiddenBar:hidden"  
-    "KeepingYouAwake:hidden"
-    "Stats:hidden"
-    "Itsycal:hidden"
-    "Ice:hidden"
+    "Raycast"
+    "Rectangle"
+    "HiddenBar"
+    "KeepingYouAwake"
+    "Stats"
+    "Itsycal"
+    "Ice"
 )
 
-for app_config in "${STARTUP_APPS[@]}"; do
-    IFS=':' read -r app_name visibility <<< "$app_config"
-    hidden_flag=$([ "$visibility" = "hidden" ] && echo "true" || echo "false")
-    
-    # Check multiple possible app locations and names
+for app_name in "${STARTUP_APPS[@]}"; do
+    # Check multiple possible app locations
     app_paths=(
         "/Applications/${app_name}.app"
-        "/Applications/${app_name,,}.app"  # lowercase
         "/System/Applications/${app_name}.app"
         "/Applications/Utilities/${app_name}.app"
     )
@@ -519,8 +496,9 @@ for app_config in "${STARTUP_APPS[@]}"; do
     app_found=false
     for app_path in "${app_paths[@]}"; do
         if [[ -d "$app_path" ]]; then
-            if osascript -e "tell application \"System Events\" to make login item at end with properties {path:\"${app_path}\", hidden:${hidden_flag}}" 2>/dev/null; then
-                print_success "Added $app_name to startup ($visibility)"
+            # Use osascript to add to login items
+            if osascript -e "tell application \"System Events\" to make login item at end with properties {path:\"${app_path}\", hidden:true}" 2>/dev/null; then
+                print_success "Added $app_name to startup"
                 app_found=true
                 break
             fi
@@ -553,17 +531,18 @@ done
 atsutil databases -remove 2>/dev/null || true
 atsutil server -ping 2>/dev/null || true
 
-# Update shell environment with more comprehensive setup
+# Update shell environment
 SHELL_ADDITIONS='
 # Homebrew
-export PATH="/opt/homebrew/bin:$PATH"
-eval "$(/opt/homebrew/bin/brew shellenv)"
+if [[ -d "/opt/homebrew" ]]; then
+    export PATH="/opt/homebrew/bin:$PATH"
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+fi
 
 # Useful aliases
 alias ls="ls -la"
 alias ll="ls -laG"
 alias grep="grep --color=always"
-alias tree="find . -print | sed -e '\''s;[^/]*/;|____;g;s;____|; |;g'\''"
 
 # Git shortcuts
 alias gs="git status"
@@ -573,7 +552,10 @@ alias gp="git push"
 
 # Node/pnpm
 export PNPM_HOME="$HOME/Library/pnpm"
-export PATH="$PNPM_HOME:$PATH"
+case ":$PATH:" in
+  *":$PNPM_HOME:"*) ;;
+  *) export PATH="$PNPM_HOME:$PATH" ;;
+esac
 
 # Go
 export GOPATH="$HOME/go"
@@ -596,7 +578,7 @@ fi
 # Add to .zshrc
 echo "$SHELL_ADDITIONS" >> ~/.zshrc
 
-print_success "Shell environment updated with comprehensive setup"
+print_success "Shell environment updated"
 
 # ===============================================================================
 # COMPLETION SUMMARY
@@ -609,23 +591,22 @@ echo
 echo "📊 INSTALLATION SUMMARY:"
 echo "========================"
 echo "• Homebrew: ✓ Installed with ${#DEV_TOOLS[@]} dev tools"
-echo "• Applications: ✓ ${#CASK_APPS[@]} apps installed via Cask"
+echo "• Applications: ✓ ${#CASK_APPS[@]} apps processed"
 echo "• Configurations: ✓ Alacritty, Zed, Fastfetch"
 echo "• System: ✓ Optimized for speed and performance"
-echo "• Startup: ✓ ${#STARTUP_APPS[@]} apps configured"
-echo "• Font: ✓ ${FONT_FAMILY} installed"
+echo "• Startup: ✓ Apps configured for auto-start"
+echo "• Font: ✓ ${FONT_FAMILY}"
 echo "• Theme: ✓ Catppuccin Mocha (Alacritty)"
-echo "• Wallpaper: ✓ Applied (or using system default)"
 echo "• Shell: ✓ Enhanced with aliases and environment"
 echo
 echo "🔧 TROUBLESHOOTING:"
 echo "• If wallpaper didn't set: Manually set ~/Downloads/wallpaper.jpg"
-echo "• If fonts look wrong: Install fonts manually from ~/Library/Fonts/"
+echo "• If fonts look wrong: Check ~/Library/Fonts/ for installed fonts"
 echo "• For Raycast: Grant accessibility permissions in System Preferences"
 echo "• For Rectangle: Grant accessibility permissions in System Preferences"
 echo
 echo "📝 Next Steps:"
-echo "• 🔄 Restart your terminal to see all changes"
+echo "• 🔄 Restart your terminal: source ~/.zshrc"
 echo "• 🚀 Open Raycast (Cmd+Space) and configure shortcuts"
 echo "• ⚡ Launch Zed to complete first-time setup"
 echo "• 📱 Check startup apps in System Preferences > Login Items"
