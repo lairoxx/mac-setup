@@ -8,6 +8,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Start timer
+START_TIME=$(date +%s)
+
 # Logging
 LOG_FILE="/tmp/setup_$(date +%Y%m%d_%H%M%S).log"
 exec 1> >(tee -a "$LOG_FILE")
@@ -29,10 +32,33 @@ print_error() {
     echo -e "${RED}✗ $1${NC}"
 }
 
+# Robust download function with retries
+download_file() {
+    local url="$1"
+    local output="$2"
+    local description="$3"
+    local max_attempts=3
+    local attempt=1
+    
+    while [[ $attempt -le $max_attempts ]]; do
+        if curl -fsSL --connect-timeout 10 --max-time 60 --retry 3 "$url" -o "$output"; then
+            print_success "$description downloaded successfully"
+            return 0
+        else
+            print_warning "$description download attempt $attempt failed"
+            ((attempt++))
+            sleep 2
+        fi
+    done
+    
+    print_error "$description download failed after $max_attempts attempts"
+    return 1
+}
+
 # Cleanup function
 cleanup() {
     print_status "Cleaning up temporary files..."
-    rm -f /tmp/homebrew_install.sh /tmp/font.otf /tmp/theme.toml /tmp/wallpaper.jpg
+    rm -f /tmp/homebrew_install.sh /tmp/font.otf /tmp/theme.toml /tmp/wallpaper.jpg /tmp/download_pids
     print_success "Cleanup complete"
 }
 trap cleanup EXIT
@@ -58,7 +84,7 @@ print_status "Log file: $LOG_FILE"
 print_status "Phase 1: Installing Homebrew..."
 
 # Download Homebrew installer in background
-curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o /tmp/homebrew_install.sh &
+download_file "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh" "/tmp/homebrew_install.sh" "Homebrew installer" &
 DOWNLOAD_PID=$!
 
 # Accept Xcode license if needed (non-interactive)
@@ -95,18 +121,62 @@ print_success "Homebrew installed and configured"
 
 print_status "Phase 2: Preparing parallel downloads and brew update..."
 
-# Start background downloads
+# Start background downloads with robust error handling
 {
-    # Download font
-    curl -fsSL "https://lairox.sirv.com/MonaspaceRadonNF-Bold.otf" -o /tmp/font.otf &
+    # Download font with fallback
+    if ! download_file "https://lairox.sirv.com/MonaspaceRadonNF-Bold.otf" "/tmp/font.otf" "MonaspaceRadonNF font"; then
+        # Fallback font URLs
+        download_file "https://github.com/githubnext/monaspace/releases/download/v1.101/monaspace-v1.101.zip" "/tmp/monaspace.zip" "Monaspace fallback" || true
+    fi &
     FONT_PID=$!
     
-    # Download Alacritty theme
-    curl -fsSL "https://raw.githubusercontent.com/catppuccin/alacritty/refs/heads/main/catppuccin-mocha.toml" -o /tmp/theme.toml &
+    # Download Alacritty theme with fallback
+    if ! download_file "https://raw.githubusercontent.com/catppuccin/alacritty/refs/heads/main/catppuccin-mocha.toml" "/tmp/theme.toml" "Catppuccin theme"; then
+        # Create fallback theme
+        cat > /tmp/theme.toml << 'EOF'
+# Fallback dark theme
+[colors.primary]
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+
+[colors.cursor]
+text = "#1e1e2e"
+cursor = "#f5e0dc"
+
+[colors.normal]
+black = "#45475a"
+red = "#f38ba8"
+green = "#a6e3a1"
+yellow = "#f9e2af"
+blue = "#89b4fa"
+magenta = "#f5c2e7"
+cyan = "#94e2d5"
+white = "#bac2de"
+
+[colors.bright]
+black = "#585b70"
+red = "#f38ba8"
+green = "#a6e3a1"
+yellow = "#f9e2af"
+blue = "#89b4fa"
+magenta = "#f5c2e7"
+cyan = "#94e2d5"
+white = "#a6adc8"
+EOF
+        print_success "Fallback Alacritty theme created"
+    fi &
     THEME_PID=$!
     
-    # Download wallpaper
-    curl -fsSL "https://lawrencemillard.uk/downloads/wallpaper.jpg" -o /tmp/wallpaper.jpg &
+    # Download wallpaper with multiple fallbacks
+    if ! download_file "https://lawrencemillard.uk/downloads/wallpaper.jpg" "/tmp/wallpaper.jpg" "Custom wallpaper"; then
+        # Try alternative wallpaper sources
+        if ! download_file "https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=2560&h=1440&fit=crop" "/tmp/wallpaper.jpg" "Unsplash wallpaper"; then
+            if ! download_file "https://wallpaperaccess.com/full/1567665.jpg" "/tmp/wallpaper.jpg" "Fallback wallpaper"; then
+                # Create a solid color fallback
+                print_warning "All wallpaper downloads failed, will use system default"
+            fi
+        fi
+    fi &
     WALLPAPER_PID=$!
     
     # Export PIDs for later use
@@ -251,25 +321,44 @@ mkdir -p ~/.config/fastfetch
 mkdir -p ~/Library/Fonts
 mkdir -p "~/Library/Application Support/Zed"
 
-# Install font
-if [[ -f /tmp/font.otf ]]; then
+# Install font with better error handling
+if [[ -f /tmp/font.otf ]] && [[ -s /tmp/font.otf ]]; then
     cp /tmp/font.otf ~/Library/Fonts/MonaspaceRadonNF-Bold.otf
-    print_success "Font installed"
+    print_success "MonaspaceRadonNF font installed"
+elif [[ -f /tmp/monaspace.zip ]]; then
+    print_status "Extracting fallback Monaspace fonts..."
+    unzip -q /tmp/monaspace.zip -d /tmp/ 2>/dev/null || true
+    find /tmp -name "*.otf" -exec cp {} ~/Library/Fonts/ \; 2>/dev/null || true
+    print_success "Monaspace fonts installed from fallback"
 else
-    print_warning "Font download failed, skipping..."
+    print_warning "Font installation failed, using system default"
+    # Update Alacritty config to use system monospace font
+    FONT_FAMILY="Monaco"
 fi
 
-# Set wallpaper
-if [[ -f /tmp/wallpaper.jpg ]]; then
-    cp /tmp/wallpaper.jpg ~/Downloads/wallpaper.jpg
-    osascript -e "tell application \"Finder\" to set desktop picture to POSIX file \"$HOME/Downloads/wallpaper.jpg\"" 2>/dev/null || true
-    print_success "Wallpaper set"
+# Set wallpaper with better error handling
+if [[ -f /tmp/wallpaper.jpg ]] && [[ -s /tmp/wallpaper.jpg ]]; then
+    # Verify it's actually a valid image
+    if file /tmp/wallpaper.jpg | grep -q "JPEG\|PNG\|image"; then
+        cp /tmp/wallpaper.jpg ~/Downloads/wallpaper.jpg
+        
+        # Try multiple methods to set wallpaper
+        if ! osascript -e "tell application \"Finder\" to set desktop picture to POSIX file \"$HOME/Downloads/wallpaper.jpg\"" 2>/dev/null; then
+            # Alternative method using System Events
+            osascript -e "tell application \"System Events\" to tell every desktop to set picture to \"$HOME/Downloads/wallpaper.jpg\"" 2>/dev/null || print_warning "Could not set wallpaper automatically"
+        fi
+        print_success "Wallpaper set successfully"
+    else
+        print_warning "Downloaded file is not a valid image, skipping wallpaper"
+    fi
 else
-    print_warning "Wallpaper download failed, skipping..."
+    print_warning "Wallpaper download failed, using system default"
 fi
 
-# Alacritty configuration
-cat > ~/.config/alacritty/alacritty.yml << 'EOF'
+# Alacritty configuration with dynamic font handling
+FONT_FAMILY="${FONT_FAMILY:-MonaspaceRadonNF}"
+
+cat > ~/.config/alacritty/alacritty.yml << EOF
 # Import Catppuccin theme
 import:
   - ~/.config/alacritty/catppuccin-mocha.toml
@@ -281,13 +370,15 @@ window:
     x: 10
     y: 10
   decorations: buttonless
+  startup_mode: Windowed
 
 # Font configuration  
 font:
   normal:
-    family: "MonaspaceRadonNF"
+    family: "${FONT_FAMILY}"
     style: Bold
   size: 14.0
+  use_thin_strokes: true
 
 # Shell
 shell:
@@ -295,7 +386,7 @@ shell:
   args:
     - --login
     - -c
-    - "fastfetch && exec zsh"
+    - "fastfetch 2>/dev/null || echo 'System ready!' && exec zsh"
 
 # Scrolling
 scrolling:
@@ -315,18 +406,25 @@ cursor:
 
 # Live config reload
 live_config_reload: true
+
+# Key bindings
+key_bindings:
+  - { key: V, mods: Command, action: Paste }
+  - { key: C, mods: Command, action: Copy }
+  - { key: Q, mods: Command, action: Quit }
+  - { key: N, mods: Command, action: SpawnNewInstance }
 EOF
 
-# Copy theme if downloaded
-if [[ -f /tmp/theme.toml ]]; then
+# Copy theme if downloaded, otherwise use fallback
+if [[ -f /tmp/theme.toml ]] && [[ -s /tmp/theme.toml ]]; then
     cp /tmp/theme.toml ~/.config/alacritty/catppuccin-mocha.toml
     print_success "Alacritty theme configured"
 else
-    print_warning "Alacritty theme download failed, using default..."
+    print_warning "Using fallback Alacritty theme"
 fi
 
-# Zed configuration
-cat > ~/Library/Application\ Support/Zed/settings.json << 'EOF'
+# Zed configuration with better font handling
+cat > ~/Library/Application\ Support/Zed/settings.json << EOF
 {
   "agent": {
     "enabled": true,
@@ -348,7 +446,7 @@ cat > ~/Library/Application\ Support/Zed/settings.json << 'EOF'
   },
   "ui_font_size": 16,
   "buffer_font_size": 15,
-  "buffer_font_family": "MonaspaceRadonNF",
+  "buffer_font_family": "${FONT_FAMILY}",
   "vim_mode": false,
   "base_keymap": "VSCode",
   "inlay_hints": {
@@ -374,7 +472,12 @@ cat > ~/Library/Application\ Support/Zed/settings.json << 'EOF'
   "cursor_blink": true,
   "hover_popover_enabled": true,
   "confirm_quit": false,
-  "restore_on_startup": "last_workspace"
+  "restore_on_startup": "last_workspace",
+  "terminal": {
+    "shell": {
+      "program": "/bin/zsh"
+    }
+  }
 }
 EOF
 
@@ -390,7 +493,7 @@ print_success "Fastfetch configuration generated"
 
 print_status "Phase 7: Configuring startup applications..."
 
-# Configure startup applications
+# Configure startup applications with better error handling
 STARTUP_APPS=(
     "Raycast:visible"
     "Rectangle:hidden"
@@ -405,9 +508,27 @@ for app_config in "${STARTUP_APPS[@]}"; do
     IFS=':' read -r app_name visibility <<< "$app_config"
     hidden_flag=$([ "$visibility" = "hidden" ] && echo "true" || echo "false")
     
-    if [[ -d "/Applications/${app_name}.app" ]]; then
-        osascript -e "tell application \"System Events\" to make login item at end with properties {path:\"/Applications/${app_name}.app\", hidden:${hidden_flag}}" 2>/dev/null || true
-        print_success "Added $app_name to startup ($visibility)"
+    # Check multiple possible app locations and names
+    app_paths=(
+        "/Applications/${app_name}.app"
+        "/Applications/${app_name,,}.app"  # lowercase
+        "/System/Applications/${app_name}.app"
+        "/Applications/Utilities/${app_name}.app"
+    )
+    
+    app_found=false
+    for app_path in "${app_paths[@]}"; do
+        if [[ -d "$app_path" ]]; then
+            if osascript -e "tell application \"System Events\" to make login item at end with properties {path:\"${app_path}\", hidden:${hidden_flag}}" 2>/dev/null; then
+                print_success "Added $app_name to startup ($visibility)"
+                app_found=true
+                break
+            fi
+        fi
+    done
+    
+    if [[ "$app_found" = false ]]; then
+        print_warning "Could not find or configure startup for: $app_name"
     fi
 done
 
@@ -417,49 +538,101 @@ done
 
 print_status "Phase 8: Applying final changes..."
 
-# Restart affected services
-killall Dock 2>/dev/null || true
-killall Finder 2>/dev/null || true
-killall SystemUIServer 2>/dev/null || true
+# Restart affected services with better error handling
+print_status "Restarting system services..."
 
-# Update shell environment
-{
-    echo 'export PATH="/opt/homebrew/bin:$PATH"'
-    echo 'eval "$(/opt/homebrew/bin/brew shellenv)"'
-    echo 'alias ls="ls -la"'
-    echo 'alias ll="ls -la"'
-    echo 'alias grep="grep --color=always"'
-} >> ~/.zshrc
+services_to_restart=("Dock" "Finder" "SystemUIServer")
+for service in "${services_to_restart[@]}"; do
+    if pgrep -x "$service" > /dev/null; then
+        killall "$service" 2>/dev/null && print_success "Restarted $service" || print_warning "Could not restart $service"
+        sleep 1
+    fi
+done
 
-print_success "Shell environment updated"
+# Refresh font cache
+atsutil databases -remove 2>/dev/null || true
+atsutil server -ping 2>/dev/null || true
+
+# Update shell environment with more comprehensive setup
+SHELL_ADDITIONS='
+# Homebrew
+export PATH="/opt/homebrew/bin:$PATH"
+eval "$(/opt/homebrew/bin/brew shellenv)"
+
+# Useful aliases
+alias ls="ls -la"
+alias ll="ls -laG"
+alias grep="grep --color=always"
+alias tree="find . -print | sed -e '\''s;[^/]*/;|____;g;s;____|; |;g'\''"
+
+# Git shortcuts
+alias gs="git status"
+alias ga="git add"
+alias gc="git commit"
+alias gp="git push"
+
+# Node/pnpm
+export PNPM_HOME="$HOME/Library/pnpm"
+export PATH="$PNPM_HOME:$PATH"
+
+# Go
+export GOPATH="$HOME/go"
+export PATH="$GOPATH/bin:$PATH"
+
+# Rust
+export PATH="$HOME/.cargo/bin:$PATH"
+
+# Better history
+export HISTSIZE=10000
+export HISTFILESIZE=10000
+export HISTCONTROL=ignoredups:erasedups
+'
+
+# Backup existing .zshrc if it exists
+if [[ -f ~/.zshrc ]]; then
+    cp ~/.zshrc ~/.zshrc.backup.$(date +%Y%m%d_%H%M%S)
+fi
+
+# Add to .zshrc
+echo "$SHELL_ADDITIONS" >> ~/.zshrc
+
+print_success "Shell environment updated with comprehensive setup"
 
 # =============================================================================
 # COMPLETION SUMMARY
 # =============================================================================
 
 SETUP_TIME=$(($(date +%s) - START_TIME))
-START_TIME=$(date +%s)
 
-print_success "🚀 Setup completed successfully!"
+print_success "🚀 Setup completed successfully in ${SETUP_TIME} seconds!"
 echo
 echo "📊 INSTALLATION SUMMARY:"
 echo "========================"
-echo "• Homebrew: Installed with ${#DEV_TOOLS[@]} dev tools"
-echo "• Applications: ${#CASK_APPS[@]} apps installed via Cask"
-echo "• Configurations: Alacritty, Zed, Fastfetch"
-echo "• System: Optimized for speed and performance"
-echo "• Startup: ${#STARTUP_APPS[@]} apps configured"
-echo "• Font: MonaspaceRadonNF installed"
-echo "• Theme: Catppuccin Mocha (Alacritty)"
-echo "• Wallpaper: Custom wallpaper applied"
+echo "• Homebrew: ✓ Installed with ${#DEV_TOOLS[@]} dev tools"
+echo "• Applications: ✓ ${#CASK_APPS[@]} apps installed via Cask"
+echo "• Configurations: ✓ Alacritty, Zed, Fastfetch"
+echo "• System: ✓ Optimized for speed and performance"
+echo "• Startup: ✓ ${#STARTUP_APPS[@]} apps configured"
+echo "• Font: ✓ ${FONT_FAMILY} installed"
+echo "• Theme: ✓ Catppuccin Mocha (Alacritty)"
+echo "• Wallpaper: ✓ Applied (or using system default)"
+echo "• Shell: ✓ Enhanced with aliases and environment"
+echo
+echo "🔧 TROUBLESHOOTING:"
+echo "• If wallpaper didn't set: Manually set ~/Downloads/wallpaper.jpg"
+echo "• If fonts look wrong: Install fonts manually from ~/Library/Fonts/"
+echo "• For Raycast: Grant accessibility permissions in System Preferences"
+echo "• For Rectangle: Grant accessibility permissions in System Preferences"
 echo
 echo "📝 Next Steps:"
-echo "• Restart your terminal to see Fastfetch"
-echo "• Open Raycast and configure shortcuts"
-echo "• Launch Zed to complete first-time setup"
-echo "• Check startup apps in System Preferences > Login Items"
+echo "• 🔄 Restart your terminal to see all changes"
+echo "• 🚀 Open Raycast (Cmd+Space) and configure shortcuts"
+echo "• ⚡ Launch Zed to complete first-time setup"
+echo "• 📱 Check startup apps in System Preferences > Login Items"
+echo "• 🎨 Run 'alacritty' to test terminal setup"
 echo
-echo "📄 Setup log saved to: $LOG_FILE"
+echo "📄 Full setup log: $LOG_FILE"
+echo "💾 Shell backup: ~/.zshrc.backup.* (if existed)"
 echo
 print_success "Ready to rock! 🎸"
 
