@@ -58,7 +58,7 @@ download_file() {
 # Cleanup function
 cleanup() {
     print_status "Cleaning up temporary files..."
-    rm -f /tmp/homebrew_install.sh /tmp/font.otf /tmp/theme.toml /tmp/wallpaper.jpg /tmp/download_pids
+    rm -f /tmp/homebrew_install.sh /tmp/font.otf /tmp/theme.toml /tmp/wallpaper.jpg /tmp/download_pids /tmp/monaspace.zip 2>/dev/null || true
     print_success "Cleanup complete"
 }
 trap cleanup EXIT
@@ -77,9 +77,9 @@ fi
 print_status "Starting blazing fast macOS VM setup..."
 print_status "Log file: $LOG_FILE"
 
-# =============================================================================
-# PHASE 1: HOMEBREW INSTALLATION (PARALLEL PREP)
-# =============================================================================
+# ===============================================================================
+# PHASE 1: HOMEBREW INSTALLATION (PARALLEL PREP)  
+# ===============================================================================
 
 print_status "Phase 1: Installing Homebrew..."
 
@@ -115,9 +115,9 @@ fi
 
 print_success "Homebrew installed and configured"
 
-# =============================================================================
+# ===============================================================================
 # PHASE 2: PARALLEL DOWNLOADS & BREW UPDATES
-# =============================================================================
+# ===============================================================================
 
 print_status "Phase 2: Preparing parallel downloads and brew update..."
 
@@ -189,9 +189,9 @@ BREW_UPDATE_PID=$!
 
 print_success "Background downloads and brew update started"
 
-# =============================================================================
+# ===============================================================================
 # PHASE 3: SYSTEM OPTIMIZATIONS (WHILE DOWNLOADS RUN)
-# =============================================================================
+# ===============================================================================
 
 print_status "Phase 3: Applying system optimizations..."
 
@@ -223,9 +223,9 @@ defaults write com.apple.finder _FXShowPosixPathInTitle -bool true
 
 print_success "System optimizations applied"
 
-# =============================================================================
+# ===============================================================================
 # PHASE 4: INSTALL DEVELOPMENT TOOLS
-# =============================================================================
+# ===============================================================================
 
 print_status "Phase 4: Installing development tools..."
 
@@ -260,9 +260,9 @@ done
 
 print_success "All development tools installed"
 
-# =============================================================================
+# ===============================================================================
 # PHASE 5: INSTALL APPLICATIONS
-# =============================================================================
+# ===============================================================================
 
 print_status "Phase 5: Installing applications..."
 
@@ -302,9 +302,9 @@ done
 
 print_success "All applications installed"
 
-# =============================================================================
+# ===============================================================================
 # PHASE 6: CONFIGURATION FILES
-# =============================================================================
+# ===============================================================================
 
 print_status "Phase 6: Setting up configuration files..."
 
@@ -487,9 +487,9 @@ print_success "Zed configuration created"
 fastfetch --gen-config &>/dev/null || true
 print_success "Fastfetch configuration generated"
 
-# =============================================================================
+# ===============================================================================
 # PHASE 7: STARTUP APPLICATIONS & FINAL SETUP
-# =============================================================================
+# ===============================================================================
 
 print_status "Phase 7: Configuring startup applications..."
 
@@ -532,9 +532,9 @@ for app_config in "${STARTUP_APPS[@]}"; do
     fi
 done
 
-# =============================================================================
+# ===============================================================================
 # PHASE 8: RESTART SERVICES & CLEANUP
-# =============================================================================
+# ===============================================================================
 
 print_status "Phase 8: Applying final changes..."
 
@@ -598,9 +598,9 @@ echo "$SHELL_ADDITIONS" >> ~/.zshrc
 
 print_success "Shell environment updated with comprehensive setup"
 
-# =============================================================================
+# ===============================================================================
 # COMPLETION SUMMARY
-# =============================================================================
+# ===============================================================================
 
 SETUP_TIME=$(($(date +%s) - START_TIME))
 
